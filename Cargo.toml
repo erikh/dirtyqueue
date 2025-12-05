@@ -1,0 +1,16 @@
+[package]
+name = "dirtyqueue"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "*", features = [ "derive" ] }
+ciborium = "*"
+fs2 = "*"
+dirtyqueue-derive = { path = "dirtyqueue-derive" }
+notify = "*"
+
+[dev-dependencies]
+tempfile = "*"
+fancy-duration = "*"
+tokio = { version = "*", features = [ "full" ] }
