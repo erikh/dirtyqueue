@@ -1,0 +1,21 @@
+[package]
+name = "dirtyqueue"
+version = "0.1.0"
+edition = "2024"
+description = "dirtyqueue is a thread and async safe, durable filesystem based queue"
+authors = ["Erik Hollensbe <git@hollensbe.org>"]
+license = "MIT"
+homepage = "https://github.com/erikh/dirtyqueue"
+repository = "https://github.com/erikh/dirtyqueue"
+keywords = ["queue", "filesystem", "durable", "threadsafe", "serde"]
+
+[dependencies]
+serde = { version = "^1", features = [ "derive" ] }
+ciborium = "^0.2"
+fs2 = "^0.4"
+dirtyqueue-derive = "0.1.0"
+
+[dev-dependencies]
+tempfile = "^3"
+fancy-duration = "^0.9"
+tokio = { version = "^1", features = [ "full" ] }
