@@ -242,7 +242,7 @@ where
 		Ok(idx)
 	}
 
-	/// Remove an object from the queue, shortening it
+	/// Remove an object from the queue, shortening it. This does **not remove the file on disk**.
 	pub fn shift(&self) -> StdResult<T> {
 		let idx = self.advance_head()?;
 		let mut obj = T::read_from(&hash_filename(&self.root, idx))?;
