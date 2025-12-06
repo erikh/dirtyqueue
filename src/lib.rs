@@ -220,7 +220,7 @@ where
 		advance(&self.tail)
 	}
 
-	/// Retrieve the index of the head of the queue.
+	/// Retrieve the index of the tail of the queue.
 	#[inline]
 	pub fn tail(&self) -> StdResult<usize> {
 		Ok(self.tail.load(Ordering::SeqCst))
