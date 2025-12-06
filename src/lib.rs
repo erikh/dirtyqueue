@@ -208,26 +208,31 @@ where
 		Ok(self.head.load(Ordering::SeqCst))
 	}
 
+	/// Advance the index of the head of the queue.
 	#[inline]
 	pub fn advance_head(&self) -> StdResult<usize> {
 		advance(&self.head)
 	}
 
+	/// Advance the index of the tail of the queue.
 	#[inline]
 	pub fn advance_tail(&self) -> StdResult<usize> {
 		advance(&self.tail)
 	}
 
+	/// Retrieve the index of the head of the queue.
 	#[inline]
 	pub fn tail(&self) -> StdResult<usize> {
 		Ok(self.tail.load(Ordering::SeqCst))
 	}
 
+	/// Return the total size of the queue
 	#[inline]
 	pub fn queue_size(&self) -> StdResult<usize> {
 		Ok(self.tail()?.abs_diff(self.head()?))
 	}
 
+	/// Add an object to the queue, lengthening it
 	pub fn push(&self, mut obj: T) -> StdResult<usize> {
 		let idx = self.advance_tail()?;
 		obj.set_key(idx);
@@ -237,6 +242,7 @@ where
 		Ok(idx)
 	}
 
+	/// Remove an object from the queue, shortening it
 	pub fn shift(&self) -> StdResult<T> {
 		let idx = self.advance_head()?;
 		let mut obj = T::read_from(&hash_filename(&self.root, idx))?;
@@ -246,6 +252,7 @@ where
 		Ok(obj)
 	}
 
+	/// Remove the file for the object from storage
 	pub fn finished(&self, obj: T) -> StdResult<T> {
 		if !obj.initialized() {
 			return Ok(obj);
@@ -255,6 +262,7 @@ where
 		Ok(obj)
 	}
 
+	/// Remove object from the queue, and the file for the object from storage
 	#[inline]
 	pub fn shift_finished(&self) -> StdResult<T> {
 		self.finished(self.shift()?)
