@@ -1,6 +1,6 @@
 [package]
 name = "dirtyqueue"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "dirtyqueue is a thread and async safe, durable filesystem based queue"
 authors = ["Erik Hollensbe <git@hollensbe.org>"]
