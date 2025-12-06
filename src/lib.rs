@@ -22,32 +22,21 @@ pub static mut DIRECTORY_HASH_LEVELS: usize = 1;
 #[allow(dead_code)]
 pub struct Error(Arc<String>);
 
-impl From<Box<dyn std::error::Error>> for Error {
+impl<T> From<T> for Error
+where
+	T: std::fmt::Display,
+{
 	#[inline]
-	fn from(value: Box<dyn std::error::Error>) -> Self {
+	fn from(value: T) -> Self {
 		Self(Arc::new(value.to_string()))
 	}
 }
 
-impl From<ciborium::de::Error<std::io::Error>> for Error {
-	#[inline]
-	fn from(value: ciborium::de::Error<std::io::Error>) -> Self {
-		Self(Arc::new(value.to_string()))
-	}
-}
-
-impl From<ciborium::ser::Error<std::io::Error>> for Error {
-	#[inline]
-	fn from(value: ciborium::ser::Error<std::io::Error>) -> Self {
-		Self(Arc::new(value.to_string()))
-	}
-}
-
-impl From<std::io::Error> for Error {
-	#[inline]
-	fn from(value: std::io::Error) -> Self {
-		Self(Arc::new(value.to_string()))
-	}
+#[derive(Debug, Clone)]
+pub enum QueueDimension {
+	Head(usize),
+	Tail(usize),
+	Closing,
 }
 
 #[inline]
@@ -140,7 +129,17 @@ where
 	root: PathBuf,
 	head: SafeUsize,
 	tail: SafeUsize,
+	sender: std::sync::mpsc::Sender<QueueDimension>,
 	_t: std::marker::PhantomData<T>,
+}
+
+impl<T> Drop for DirtyQueue<T>
+where
+	T: IO + Keyed + Clone + Sync,
+{
+	fn drop(&mut self) {
+		self.sender.send(QueueDimension::Closing).unwrap();
+	}
 }
 
 impl<T> DirtyQueue<T>
@@ -148,16 +147,23 @@ where
 	T: IO + Keyed + Clone + Sync,
 {
 	pub fn new(path: impl AsRef<Path>) -> StdResult<Self> {
-		if !std::fs::exists(path.as_ref())? {
-			std::fs::create_dir_all(path.as_ref())?;
+		let pbuf = path.as_ref().to_path_buf();
+
+		if !std::fs::exists(&pbuf)? {
+			std::fs::create_dir_all(&pbuf)?;
 		}
 
+		let (s, r) = std::sync::mpsc::channel();
 		let (head, tail) = Self::take_hint(path.as_ref())?;
 
+		let p = pbuf.clone();
+		std::thread::spawn(move || Self::write_hints(&p, r));
+
 		Ok(Self {
-			root: path.as_ref().to_path_buf(),
+			root: pbuf,
 			head: Arc::new(AtomicUsize::from(head)),
 			tail: Arc::new(AtomicUsize::from(tail)),
+			sender: s,
 			_t: Default::default(),
 		})
 	}
@@ -191,7 +197,8 @@ where
 		let idx = self.advance_tail()?;
 		obj.set_key(idx);
 		obj.write_to(&hash_filename(&self.root, idx))?;
-		self.write_hint(self.head()?, idx)?;
+
+		self.sender.send(QueueDimension::Tail(idx))?;
 
 		Ok(idx)
 	}
@@ -200,7 +207,7 @@ where
 		let idx = self.advance_head()?;
 		let mut obj = T::read_from(&hash_filename(&self.root, idx))?;
 		obj.set_key(idx);
-		self.write_hint(obj.key(), self.tail()?)?;
+		self.sender.send(QueueDimension::Head(idx))?;
 
 		Ok(obj)
 	}
@@ -219,27 +226,64 @@ where
 		self.finished(self.shift()?)
 	}
 
-	fn write_hint(&self, next: usize, last: usize) -> StdResult<()> {
-		if !std::fs::exists(&self.root)? {
-			std::fs::create_dir_all(&self.root)?;
+	fn write_hints(root: &Path, receiver: std::sync::mpsc::Receiver<QueueDimension>) {
+		fn juggle_write(root: &Path, filename: &str, data: &[usize]) {
+			let mut f = std::fs::OpenOptions::new()
+				.create(true)
+				.write(true)
+				.open(root.join(&filename))
+				.expect("Opening temporary hint file for writing");
+			f.lock_exclusive().expect("Locking temporary hint file");
+
+			ciborium::into_writer(&data, &mut f).expect("Serializing temporary hint file payload");
+
+			let hint = std::fs::OpenOptions::new()
+				.create(true)
+				.write(true)
+				.open(root.join(HINT_FILE))
+				.expect("Opening hint file for writing");
+
+			hint.lock_exclusive().expect("Locking hint file");
+
+			let _ = std::fs::rename(root.join(&filename), root.join(HINT_FILE));
 		}
 
-		let tmp = format!("{}.tmp", HINT_FILE);
+		if !std::fs::exists(root).expect("Checking root directory existence") {
+			std::fs::create_dir_all(root).expect("Creating root_ directory");
+		}
 
-		let mut f = std::fs::OpenOptions::new()
-			.create(true)
-			.write(true)
-			.open(self.root.join(&tmp))?;
+		let mut last_write = std::time::Instant::now();
+		let mut last_head = 0;
+		let mut last_tail = 0;
 
-		f.lock_exclusive()?;
+		loop {
+			if let Ok(qd) = receiver.recv() {
+				let (filename, data) = match qd {
+					QueueDimension::Head(head) => (
+						format!("{}.head.{}.tmp", HINT_FILE, head),
+						vec![head, last_tail],
+					),
+					QueueDimension::Tail(tail) => (
+						format!("{}.tail.{}.tmp", HINT_FILE, tail),
+						vec![last_head, tail],
+					),
+					QueueDimension::Closing => {
+						eprintln!("completing: {} {}", last_head, last_tail);
+						let filename = format!("{}.{}.{}.tmp", HINT_FILE, last_head, last_tail);
+						juggle_write(root, &filename, &vec![last_head, last_tail]);
+						return;
+					}
+				};
 
-		// if this check fails, we've raced waiting for a lock and someone else won; exit cleanly so
-		// we don't cause more trouble.
-		ciborium::into_writer(&vec![next, last], &mut f)?;
-		let _ = std::fs::remove_file(self.root.join(HINT_FILE));
-		std::fs::hard_link(self.root.join(&tmp), self.root.join(HINT_FILE))?;
+				if std::time::Instant::now() - last_write > std::time::Duration::from_nanos(500) {
+					juggle_write(root, &filename, &data);
+					last_write = std::time::Instant::now();
+				}
 
-		Ok(())
+				last_head = data[0];
+				last_tail = data[1];
+			}
+		}
 	}
 
 	fn take_hint(path: impl AsRef<Path>) -> StdResult<(usize, usize)> {
@@ -367,6 +411,7 @@ mod tests {
 		);
 
 		let queue: DirtyQueue<Thing> = DirtyQueue::new(dir.path()).unwrap();
+		eprintln!("big queue size: {}", queue.queue_size().unwrap());
 		assert!(queue.shift().is_err())
 	}
 
@@ -463,6 +508,7 @@ mod tests {
 		assert_eq!(count - 1, SIZE);
 
 		let queue: DirtyQueue<Thing> = DirtyQueue::new(dir.path()).unwrap();
+		eprintln!("tokio queue size: {}", queue.queue_size().unwrap());
 		assert!(queue.shift().is_err())
 	}
 
@@ -513,6 +559,7 @@ mod tests {
 		assert_eq!(count - 1, SIZE);
 
 		let queue: DirtyQueue<Thing> = DirtyQueue::new(dir.path()).unwrap();
+		eprintln!("thread queue size: {}", queue.queue_size().unwrap());
 		assert!(queue.shift().is_err())
 	}
 }
