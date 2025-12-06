@@ -1,4 +1,6 @@
 use std::{
+	fmt::Display,
+	ops::Deref,
 	path::{Path, PathBuf},
 	sync::{
 		Arc,
@@ -7,7 +9,7 @@ use std::{
 };
 
 use fs2::FileExt;
-use serde::{Serialize, de::Deserialize};
+use serde::{Deserialize, Serialize};
 
 pub use dirtyqueue_derive::DirtyQueue;
 
@@ -16,37 +18,55 @@ const HINT_FILE: &str = "hint";
 type SafeUsize = Arc<AtomicUsize>;
 type StdResult<T> = std::result::Result<T, Error>;
 
+/// Modifying this static with `unsafe` will increase the number of subdirectory levels used in the
+/// directory hashing structure. Hashes are computed in 2 digit sections starting at the largest
+/// base-10 pair of single-digit numbers, zero left-padded.
 pub static mut DIRECTORY_HASH_LEVELS: usize = 1;
 
+/// Error type for most Result returns. Converts errors that it's familiar with to string, largely
+/// to make it cloneable.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct Error(Arc<String>);
+pub struct Error(String);
+
+impl Display for Error {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(&self.0)
+	}
+}
+
+impl Deref for Error {
+	type Target = String;
+
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
 
 impl From<Box<dyn std::error::Error>> for Error {
 	#[inline]
 	fn from(value: Box<dyn std::error::Error>) -> Self {
-		Self(Arc::new(value.to_string()))
+		Self(value.to_string())
 	}
 }
 
 impl From<ciborium::de::Error<std::io::Error>> for Error {
 	#[inline]
 	fn from(value: ciborium::de::Error<std::io::Error>) -> Self {
-		Self(Arc::new(value.to_string()))
+		Self(value.to_string())
 	}
 }
 
 impl From<ciborium::ser::Error<std::io::Error>> for Error {
 	#[inline]
 	fn from(value: ciborium::ser::Error<std::io::Error>) -> Self {
-		Self(Arc::new(value.to_string()))
+		Self(value.to_string())
 	}
 }
 
 impl From<std::io::Error> for Error {
 	#[inline]
 	fn from(value: std::io::Error) -> Self {
-		Self(Arc::new(value.to_string()))
+		Self(value.to_string())
 	}
 }
 
@@ -98,24 +118,39 @@ fn hash_filename(path: &Path, count: usize) -> PathBuf {
 	path.join(s).to_path_buf()
 }
 
+/// The Keyed trait must be implemented for types that want to be used with the queue. Storing this
+/// on your struct will cause it to also be serialized (pointlessly) unless you `#[serde(skip)]`
+/// it. Every queue modification modifies the key; both shift and push.
+///
+/// Note, if the initialized call returns false, consume calls will silently fail. This is
+/// important to maintain, so your struct key should be [std::option::Option] instead of just
+/// [usize].
+///
 pub trait Keyed: Sized {
 	fn key(&self) -> usize;
 	fn set_key(&mut self, key: usize) -> usize;
 	fn initialized(&self) -> bool;
 }
 
+/// IO provides synchronous I/O via [std::fs]. **Note**: using the [dirtyqueue_derive::DirtyQueue]
+/// derive will address this without additional work from you.
 pub trait IO: Serialize + for<'de> Deserialize<'de> {
+	/// Deserialize an object from the root path and return it.
 	fn read_from(filename: &PathBuf) -> StdResult<Self> {
 		let mut f = std::fs::OpenOptions::new().read(true).open(filename)?;
 		Ok(ciborium::from_reader(&mut f)?)
 	}
 
+	/// Remove the file, presumably after the queue has been shifted and the storage is no longer
+	/// needed.
 	#[inline]
 	fn finished(&self, filename: &PathBuf) -> StdResult<()> {
 		std::fs::remove_file(filename)?;
 		Ok(())
 	}
 
+	/// Inverse of read_from; takes the path to write to and writes self to it via serde and
+	/// ciborium.
 	fn write_to(&self, path: &PathBuf) -> StdResult<()> {
 		let parent = path.parent().map(|x| x.to_str().unwrap()).unwrap_or("/");
 		if !std::fs::exists(parent)? {
@@ -132,6 +167,9 @@ pub trait IO: Serialize + for<'de> Deserialize<'de> {
 	}
 }
 
+/// DirtyQueue implements a filesystem-based queue on a generic type that implements [IO],
+/// [Keyed], [serde::Serialize], [serde::Deserialize], [Clone], [Debug], and [Sync]. It keeps a
+/// pair of [usize] to manage the queue and loads from disk on demand.
 #[derive(Debug, Clone)]
 pub struct DirtyQueue<T>
 where
@@ -147,6 +185,8 @@ impl<T> DirtyQueue<T>
 where
 	T: IO + Keyed + Clone + Sync,
 {
+	/// Construct a new queue; takes a path for where to base the tree on the filesystem; dir will be
+	/// created if it does not exist.
 	pub fn new(path: impl AsRef<Path>) -> StdResult<Self> {
 		if !std::fs::exists(path.as_ref())? {
 			std::fs::create_dir_all(path.as_ref())?;
@@ -162,6 +202,7 @@ where
 		})
 	}
 
+	/// Retrieve the index of the head of the queue.
 	#[inline]
 	pub fn head(&self) -> StdResult<usize> {
 		Ok(self.head.load(Ordering::SeqCst))

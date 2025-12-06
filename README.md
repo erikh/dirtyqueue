@@ -6,7 +6,7 @@ This library implements a queue over a type that implements `serde` traits and s
 
 The queue implementation uses std::io/fs for file access, and `fs2` for flock, which it uses to manage the hint file only. It is tested against both a simple threaded version and tokio. An asynchronous I/O implementation is planned.
 
-It expects that your serialized types implement two traits which come with the library; `Keyed` and `IO`, the latter of which is covered by `derive(DirtyQueue)`. `Keyed` requires storage, but you can `#[serde(skip)]` it gracefully. The queue is Debug, Clone, and Send, but not Sync. If you wish to use it in certain scenarios where it needs to cross thread boundaries, you may need to wrap it in a mutex, but it is not necessary in any of the tests.
+It expects that your serialized types implement two traits which come with the library; `Keyed` and `IO`, the latter of which is covered by `derive(DirtyQueue)`. `Keyed` requires storage, but you can `#[serde(skip)]` it gracefully. The queue is Debug, Clone, and Sync, but not Send. If you wish to use it in certain scenarios where it needs to cross thread boundaries, you may need to wrap it in a mutex, but it is not necessary in any of the tests.
 
 ## Performance
 
